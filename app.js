@@ -3,7 +3,7 @@
    Body landmarks come from MediaPipe Pose (Apache 2.0), run on the phone. Nothing is sent anywhere. */
 (() => {
 'use strict';
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.1';
 const $ = id => document.getElementById(id);
 const now = () => performance.now();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -14,8 +14,8 @@ const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { ret
 const CFG = {
   leanMin: 12, leanMax: 28, leanGaugeMax: 45,      // degrees the phone leans back from upright
   steadyMs: 1400,
-  headTopMin: 0.03, feetMax: 0.97, bodyMin: 0.42, bodyMax: 0.92, centreMin: 0.36, centreMax: 0.64,
-  faceYaw: 18, armMin: 20, armMax: 78, feetRatio: 0.95,
+  headTopMin: 0.03, feetMax: 0.93, bodyMin: 0.42, bodyMax: 0.80, centreMin: 0.36, centreMax: 0.64,   // feetMax/bodyMax tightened 15 Oct 2026: the first real capture passed at 1.35 m, the checks should push people to about 2 m
+  faceYaw: 18, armMin: 35, armMax: 78, feetRatio: 0.95,   // armMin: below about 35 degrees the arms merge with the hips in the outline and the hips come out far too wide (first real capture, 15 Oct 2026)
   holdMs: 1300, turnDoneDeg: 340, turnMaxMs: 60000, saveEveryDeg: 4, saveEveryMs: 450, saveMinMs: 130, maxFrames: 150, longSide: 1280,
 };
 
@@ -158,7 +158,7 @@ function startTilt() {
     if (current !== 's-place') { clearInterval(tiltTimer); return; }
     const o = S.ori, say = $('tilt-say'), g = $('gauge');
     if (!o || now() - o.t > 1500) {
-      if (now() - began > 3500) { say.textContent = 'This device has no tilt sensor. Lean the phone back a little, then continue.'; $('skip-tilt').textContent = 'Continue'; $('tilt-note').hidden = true; }
+      if (now() - began > 3500) { say.textContent = 'No tilt readings are arriving. Brave blocks the motion sensor unless Shields are off for this site; Chrome and Safari allow it. Otherwise lean the phone back a little and continue.'; $('skip-tilt').textContent = 'Continue'; $('tilt-note').hidden = true; }
       return;
     }
     const lean = 90 - o.beta; let msg, ok = false;
@@ -259,7 +259,7 @@ function standingAdvice(a) {
   if (a.centre < CFG.centreMin) return ['left', 'Step to your left', 'adjust'];
   if (a.centre > CFG.centreMax) return ['right', 'Step to your right', 'adjust'];
   if (Math.abs(a.yaw) > CFG.faceYaw) return ['face', 'Face the phone', 'adjust'];
-  if (a.armL < CFG.armMin || a.armR < CFG.armMin) return ['arms', 'Hold your arms out from your sides', 'adjust', 'Hold your arms out from your sides, like the letter A.'];
+  if (a.armL < CFG.armMin || a.armR < CFG.armMin) return ['arms', 'Hold your arms out, well away from your body', 'adjust', 'Hold your arms out from your sides, well away from your body, like the letter A. Keep them there for the whole turn.'];
   if (a.armL > CFG.armMax || a.armR > CFG.armMax) return ['armsdown', 'Lower your arms a little', 'adjust'];
   if (a.feetRatio < CFG.feetRatio) return ['feetapart', 'Stand with your feet apart', 'adjust', 'Stand with your feet apart, about shoulder width.'];
   return null;
@@ -333,7 +333,7 @@ function onPose(r) {
     if (a) grab(r, 'front', a);
     S.phase = 'turn'; S.turnAt = t; S.cum = 0; S.prevYaw = a ? a.yaw : 0; S.lastMoveAt = t; S.said = {}; S.speed = [];
     $('ring').hidden = false; setRing(0); banner('Turn slowly, all the way round', 'go'); log('turn-start');
-    Voice.say('Now turn slowly to your left, all the way round. Keep your arms out.', { force: true });
+    Voice.say('Now turn slowly to your left, all the way round. Keep your arms out, well away from your body.', { force: true });
     return;
   }
   if (S.phase === 'turn') {
@@ -404,7 +404,11 @@ async function buildReview(complete) {
   const frames = S.frames.filter(f => f.blob), turned = Math.abs(S.cum), seen = frames.filter(f => f.lm).length;
   const cut = frames.filter(f => f.lm && (Math.max(...f.lm.slice(27, 33).map(p => p[1])) > 0.99 || f.lm[0][1] < 0.02)).length;
   const betas = frames.map(f => f.beta).filter(b => b != null), moved = betas.length ? Math.max(...betas) - Math.min(...betas) : null;
+  const armOf = (f, s, w) => Math.atan2(Math.abs(f.lm[w][0] - f.lm[s][0]) * f.w, (f.lm[w][1] - f.lm[s][1]) * f.h) * 180 / Math.PI;
+  const facing = frames.filter(f => f.lm && (Math.abs(f.turned) < 30 || Math.abs(f.turned) > 330));
+  const armsDown = facing.filter(f => Math.min(armOf(f, 11, 15), armOf(f, 12, 16)) < CFG.armMin).length;
   const checks = [
+    [facing.length === 0 || armsDown <= facing.length * 0.3, facing.length === 0 ? 'Could not check the arms.' : (armsDown <= facing.length * 0.3 ? 'Arms stayed out.' : 'Arms dropped towards the body during the turn. Measurements will be poor; measure again with arms held out.')],
     [complete && turned >= CFG.turnDoneDeg, complete ? 'Full turn seen (' + Math.round(turned) + '°).' : 'The turn looked incomplete (' + Math.round(turned) + '°). You can still save it, or measure again.'],
     [frames.length >= 30, frames.length + ' pictures saved' + (frames.length < 30 ? '. That is few; a slower turn gives more.' : '.')],
     [cut <= frames.length * 0.1, cut ? 'Head or feet were out of the picture in ' + cut + ' pictures.' : 'Head and feet stayed in the picture.'],
