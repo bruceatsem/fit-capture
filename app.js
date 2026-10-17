@@ -3,7 +3,7 @@
    Body landmarks come from MediaPipe Pose (Apache 2.0), run on the phone. Nothing is sent anywhere. */
 (() => {
 'use strict';
-const APP_VERSION = '0.1.1';
+const APP_VERSION = '0.1.2';
 const $ = id => document.getElementById(id);
 const now = () => performance.now();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -88,7 +88,10 @@ $('go-clothes').addEventListener('click', () => {
   $('home-err').hidden = true; S.heightCm = h; store.set('fit.height', String(Math.round(h))); S.blurFace = $('opt-face').checked;
   show('s-clothes');
 });
-$('go-sound').addEventListener('click', () => show('s-sound'));
+$('go-sound').addEventListener('click', () => {
+  if (!$('opt-fitted').checked) { $('clothes-err').textContent = 'Please change into something tight on the legs, then tick the box.'; $('clothes-err').hidden = false; return; }
+  $('clothes-err').hidden = true; S.fittedConfirmed = true; show('s-sound');
+});
 
 /* ---------- sound + permissions ---------- */
 $('test-voice').addEventListener('click', () => {
@@ -424,7 +427,7 @@ async function buildReview(complete) {
   }
   const meta = {
     app: 'fit-capture', version: APP_VERSION, created: new Date().toISOString(), height_cm: S.heightCm, face_blurred: S.blurFace, complete, turned_deg: +S.cum.toFixed(1),
-    user_agent: navigator.userAgent, screen: { w: screen.width, h: screen.height, dpr: window.devicePixelRatio }, video: S.video, track: S.track, model_complexity: S.modelComplexity,
+    user_agent: navigator.userAgent, screen: { w: screen.width, h: screen.height, dpr: window.devicePixelRatio }, video: S.video, track: S.track, model_complexity: S.modelComplexity, fitted_confirmed: !!S.fittedConfirmed,
     mirrored: false, camera: 'front', tilt_at_start: S.tiltAtStart, tilt_skipped: S.tiltSkipped, orientation_samples: S.oriLog.slice(-1500), events: S.events,
     frames: frames.map((f, n) => ({ file: 'frames/f' + String(n).padStart(3, '0') + '.jpg', t_ms: f.t, tag: f.tag, w: f.w, h: f.h, facing_deg: f.yaw, turned_deg: f.turned, beta: f.beta, gamma: f.gamma, landmarks: f.lm, world: f.world })),
   };

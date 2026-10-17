@@ -1,4 +1,4 @@
-# Fit Capture (test app, version 0.1.1)
+# Fit Capture (test app, version 0.1.2)
 
 A web page that guides a person through a body capture with their phone: lean the phone against a wall,
 step back, hold an A-pose, turn once. It saves a capture file (pictures from the turn plus the app's notes)
