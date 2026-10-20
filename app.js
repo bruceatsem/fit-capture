@@ -3,7 +3,7 @@
    Body landmarks come from MediaPipe Pose (Apache 2.0), run on the phone. Nothing is sent anywhere. */
 (() => {
 'use strict';
-const APP_VERSION = '0.3.2';
+const APP_VERSION = '0.3.4';
 const $ = id => document.getElementById(id);
 const now = () => performance.now();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -100,10 +100,35 @@ $('test-voice').addEventListener('click', () => {
   $('voice-note').textContent = Voice.ok ? 'No voice? Check the phone is not on silent. You will still hear beeps and see large text.' : 'This browser has no built-in voice. You will hear beeps and see large text instead.';
 });
 
+function setOri(beta, gamma, alpha, src) {
+  S.ori = { beta: beta, gamma: gamma, alpha: alpha, t: now(), src: src }; S.oriCount++; S.oriSrc = src;
+  if (S.oriLog.length < 3000 && (S.oriLog.length === 0 || S.ori.t - S.oriLog[S.oriLog.length - 1].t > 100)) S.oriLog.push({ t: Math.round(S.ori.t), b: +beta.toFixed(2), g: +(gamma || 0).toFixed(2), s: src });
+}
 function onOrientation(e) {
   if (e.beta == null) return;
-  S.ori = { beta: e.beta, gamma: e.gamma, alpha: e.alpha, t: now() }; S.oriCount++;
-  if (S.oriLog.length < 3000 && (S.oriLog.length === 0 || S.ori.t - S.oriLog[S.oriLog.length - 1].t > 100)) S.oriLog.push({ t: Math.round(S.ori.t), b: +e.beta.toFixed(2), g: +(e.gamma || 0).toFixed(2) });
+  setOri(e.beta, e.gamma, e.alpha, 'orientation');
+}
+// Fallbacks when no orientation events come (seen on an Android 10 phone in Chrome and Brave, 20 October 2026): the same
+// angles from gravity, from devicemotion or from the Accelerometer sensor. beta = angle of the phone's long axis from flat.
+function fromGravity(ax, ay, az, src) {
+  if (ax == null || ay == null || az == null) return;
+  if (S.ori && S.ori.src === 'orientation' && now() - S.ori.t < 1000) return;      // real orientation events win
+  const beta = Math.atan2(ay, az) * 180 / Math.PI, gamma = Math.atan2(-ax, Math.hypot(ay, az)) * 180 / Math.PI;
+  setOri(beta, gamma, null, src);
+}
+function onMotion(e) {
+  const g = e.accelerationIncludingGravity; if (!g) return;
+  S.motionCount = (S.motionCount || 0) + 1;
+  fromGravity(g.x, g.y, g.z, 'motion');
+}
+function startAccelerometer() {
+  if (S.accel || typeof Accelerometer === 'undefined') return;
+  try {
+    const a = new Accelerometer({ frequency: 20 }); S.accel = a;
+    a.addEventListener('reading', () => { S.accelCount = (S.accelCount || 0) + 1; fromGravity(a.x, a.y, a.z, 'accelerometer'); });
+    a.addEventListener('error', ev => { log('accelerometer-error', ev.error && ev.error.name); S.accelErr = ev.error && ev.error.name; });
+    a.start();
+  } catch (e) { log('accelerometer-error', String(e)); S.accelErr = String(e); }
 }
 // Chrome 151+ (Android and desktop) and Safari gate the motion sensor behind requestPermission(); it must be called from a
 // tap. Chrome answers from its "Motion sensors" site setting: "denied" means the sensor is blocked for this site, no prompt.
@@ -114,7 +139,12 @@ async function enableSensors() {
       S.sensorPerm = await DeviceOrientationEvent.requestPermission(); log('sensor-permission', S.sensorPerm);
     }
   } catch (e) { S.sensorPerm = 'error'; log('sensor-permission', 'error ' + e); }
+  try {
+    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') log('motion-permission', await DeviceMotionEvent.requestPermission());
+  } catch (e) { log('motion-permission', 'error ' + e); }
   window.removeEventListener('deviceorientation', onOrientation); window.addEventListener('deviceorientation', onOrientation);
+  window.removeEventListener('devicemotion', onMotion); window.addEventListener('devicemotion', onMotion);
+  startAccelerometer();
 }
 function sensorHelp() {
   const brave = !!(navigator.brave), chrome = /Chrome\//.test(navigator.userAgent) && !brave, ios = /iPhone|iPad/.test(navigator.userAgent);
@@ -188,7 +218,7 @@ function startTilt() {
     else if (range > 1.5) msg = 'Good angle. Now let go and leave it still.';
     else { msg = 'Good. Hold it there…'; ok = true; }
     say.textContent = msg; say.classList.toggle('ok', ok); g.classList.toggle('ok', lean >= CFG.leanMin && lean <= CFG.leanMax);
-    if (ok) { if (!tiltGood) tiltGood = now(); if (now() - tiltGood > CFG.steadyMs) { clearInterval(tiltTimer); S.tiltAtStart = { beta: o.beta, gamma: o.gamma, lean }; log('tilt-ok', lean.toFixed(1)); Voice.beep(1040, 200); beginCamera(); } }
+    if (ok) { if (!tiltGood) tiltGood = now(); if (now() - tiltGood > CFG.steadyMs) { clearInterval(tiltTimer); S.tiltAtStart = { beta: o.beta, gamma: o.gamma, lean }; log('tilt-ok', lean.toFixed(1) + ' ' + (o.src || '')); Voice.beep(1040, 200); beginCamera(); } }
     else tiltGood = 0;
   }, 120);
 }
@@ -237,7 +267,9 @@ function setRing(deg) {
 const Rec = {
   mime() {
     if (!window.MediaRecorder) return null;
-    for (const m of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4;codecs=avc1', 'video/mp4'])
+    // cheapest encoder first: H.264 is in hardware on phones; VP9 in software dropped the rate to 6 frames a second on an
+    // Android 10 phone (capture of 20 October 2026) while the pose detector was also running
+    for (const m of ['video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/webm;codecs=h264', 'video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm', 'video/mp4'])
       if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
     return '';
   },
@@ -478,7 +510,7 @@ async function buildReview(complete) {
   const meta = {
     app: 'fit-capture', version: APP_VERSION, created: new Date().toISOString(), height_cm: S.heightCm, face_blurred: S.blurFace, complete, turned_deg: +S.cum.toFixed(1),
     user_agent: navigator.userAgent, screen: { w: screen.width, h: screen.height, dpr: window.devicePixelRatio }, video: S.video, track: S.track, model_complexity: S.modelComplexity, fitted_confirmed: !!S.fittedConfirmed, avatar_wanted: !!S.avatarWanted,
-    mirrored: false, camera: 'front', tilt_at_start: S.tiltAtStart, tilt_skipped: S.tiltSkipped, sensor_permission: S.sensorPerm, orientation_events: S.oriCount, orientation_samples: S.oriLog.slice(-1500), events: S.events,
+    mirrored: false, camera: 'front', tilt_at_start: S.tiltAtStart, tilt_skipped: S.tiltSkipped, sensor_permission: S.sensorPerm, orientation_events: S.oriCount, orientation_source: S.oriSrc || null, motion_events: S.motionCount || 0, accelerometer_events: S.accelCount || 0, accelerometer_error: S.accelErr || null, orientation_samples: S.oriLog.slice(-1500), events: S.events,
     video_file: S.videoBlob ? { file: 'video.' + (/mp4/.test(S.videoBlob.type) ? 'mp4' : 'webm'), mime: S.videoBlob.type, t_start_ms: S.recStart, t_end_ms: S.recEnd, bytes: S.videoBlob.size } : null,
     frames: frames.map((f, n) => ({ file: 'frames/f' + String(n).padStart(3, '0') + '.jpg', t_ms: f.t, tag: f.tag, w: f.w, h: f.h, facing_deg: f.yaw, turned_deg: f.turned, beta: f.beta, gamma: f.gamma, landmarks: f.lm, world: f.world })),
   };

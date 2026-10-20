@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fit Capture: motion sensor check</title>
+<style>
+  body { margin: 0; padding: 16px; background: #0e1a2b; color: #f3f1ea; font: 16px/1.5 system-ui, sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  button { font: inherit; padding: 14px 18px; border-radius: 12px; border: 1px solid #f4c430; background: #f4c430; color: #0e1a2b; font-weight: 700; width: 100%; margin: 12px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  td { padding: 6px 4px; border-top: 1px solid #2a3a52; vertical-align: top; }
+  td:first-child { color: #a3b3c9; white-space: nowrap; }
+  .ok { color: #46c794; } .bad { color: #ff7a6b; }
+  pre { white-space: pre-wrap; font-size: 12px; color: #a3b3c9; }
+</style>
+</head>
+<body>
+<h1>Motion sensor check</h1>
+<p>Tap Start, then tilt the phone. Counts should rise on at least one line. Send a screenshot of this page.</p>
+<button id="start">Start</button>
+<table id="t"></table>
+<pre id="log"></pre>
+<script>
+const rows = {}, counts = {}, last = {};
+function row(k, v, cls) { if (!rows[k]) { const tr = document.createElement('tr'); tr.innerHTML = '<td>' + k + '</td><td></td>'; document.getElementById('t').appendChild(tr); rows[k] = tr.lastChild; } rows[k].textContent = v; rows[k].className = cls || ''; }
+function note(k, v) { counts[k] = (counts[k] || 0) + 1; last[k] = v; }
+function logln(s) { document.getElementById('log').textContent += s + '\n'; }
+row('browser', navigator.userAgent);
+row('brave', navigator.brave ? 'yes (Shields block sensors unless off for this site)' : 'no');
+row('secure context', window.isSecureContext ? 'yes' : 'NO (sensors need https)', window.isSecureContext ? 'ok' : 'bad');
+row('DeviceOrientationEvent', typeof DeviceOrientationEvent === 'undefined' ? 'missing' : ('present, requestPermission ' + (typeof DeviceOrientationEvent.requestPermission === 'function' ? 'yes' : 'no')));
+row('DeviceMotionEvent', typeof DeviceMotionEvent === 'undefined' ? 'missing' : ('present, requestPermission ' + (typeof DeviceMotionEvent.requestPermission === 'function' ? 'yes' : 'no')));
+row('Accelerometer API', typeof Accelerometer === 'undefined' ? 'missing' : 'present');
+row('Gyroscope API', typeof Gyroscope === 'undefined' ? 'missing' : 'present');
+row('RelativeOrientationSensor', typeof RelativeOrientationSensor === 'undefined' ? 'missing' : 'present');
+if (navigator.permissions && navigator.permissions.query) {
+  for (const n of ['accelerometer', 'gyroscope', 'magnetometer']) navigator.permissions.query({ name: n }).then(r => row('permission ' + n, r.state, r.state === 'granted' ? 'ok' : 'bad'), e => row('permission ' + n, 'query failed: ' + e.message));
+}
+document.getElementById('start').addEventListener('click', async () => {
+  try { if (DeviceOrientationEvent.requestPermission) row('orientation requestPermission', await DeviceOrientationEvent.requestPermission()); } catch (e) { row('orientation requestPermission', 'error ' + e, 'bad'); }
+  try { if (DeviceMotionEvent.requestPermission) row('motion requestPermission', await DeviceMotionEvent.requestPermission()); } catch (e) { row('motion requestPermission', 'error ' + e, 'bad'); }
+  window.addEventListener('deviceorientation', e => note('deviceorientation', e.beta == null ? 'event, no numbers' : 'beta ' + e.beta.toFixed(1) + ' gamma ' + (e.gamma || 0).toFixed(1)));
+  window.addEventListener('deviceorientationabsolute', e => note('deviceorientationabsolute', e.beta == null ? 'event, no numbers' : 'beta ' + e.beta.toFixed(1)));
+  window.addEventListener('devicemotion', e => { const g = e.accelerationIncludingGravity; note('devicemotion', !g || g.x == null ? 'event, no numbers' : 'g ' + g.x.toFixed(1) + ' ' + g.y.toFixed(1) + ' ' + g.z.toFixed(1)); });
+  for (const [name, C] of [['Accelerometer', window.Accelerometer], ['Gyroscope', window.Gyroscope], ['RelativeOrientationSensor', window.RelativeOrientationSensor]]) {
+    if (!C) continue;
+    try {
+      const s = new C({ frequency: 10 });
+      s.addEventListener('reading', () => note(name, s.x != null ? s.x.toFixed(2) + ' ' + s.y.toFixed(2) + ' ' + s.z.toFixed(2) : (s.quaternion ? 'q ' + s.quaternion.map(v => v.toFixed(2)).join(' ') : 'reading')));
+      s.addEventListener('error', ev => row(name + ' error', ev.error ? ev.error.name + ': ' + ev.error.message : 'error', 'bad'));
+      s.start();
+    } catch (e) { row(name + ' error', String(e), 'bad'); }
+  }
+  setInterval(() => { for (const k of ['deviceorientation', 'deviceorientationabsolute', 'devicemotion', 'Accelerometer', 'Gyroscope', 'RelativeOrientationSensor']) row(k, (counts[k] || 0) + ' events' + (last[k] ? ', last: ' + last[k] : ''), counts[k] ? 'ok' : 'bad'); }, 500);
+  logln('started ' + new Date().toISOString());
+});
+</script>
+</body>
+</html>
