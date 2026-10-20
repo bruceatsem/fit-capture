@@ -3,7 +3,7 @@
    Body landmarks come from MediaPipe Pose (Apache 2.0), run on the phone. Nothing is sent anywhere. */
 (() => {
 'use strict';
-const APP_VERSION = '0.1.2';
+const APP_VERSION = '0.3.2';
 const $ = id => document.getElementById(id);
 const now = () => performance.now();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -59,7 +59,7 @@ const Voice = {
 /* ---------- session record ---------- */
 const S = {
   heightCm: null, blurFace: true, stream: null, pose: null, poseReady: false, running: false, busy: false,
-  ori: null, oriCount: 0, oriLog: [], events: [], frames: [], pending: [], t0: 0,
+  ori: null, oriCount: 0, oriLog: [], events: [], frames: [], pending: [], t0: 0, sensorPerm: 'none',
   phase: 'idle', okSince: 0, countAt: 0, lastSeen: 0, cum: 0, prevYaw: null, turnAt: 0, lastSave: { t: 0, cum: 0 }, lastMoveAt: 0, said: {},
   fps: 0, fpsN: 0, fpsT: 0, video: { w: 0, h: 0 }, zip: null, tiltAtStart: null, tiltSkipped: false, wake: null,
 };
@@ -85,7 +85,7 @@ function readHeight() {
 $('go-clothes').addEventListener('click', () => {
   const h = readHeight();
   if (!(h >= 120 && h <= 230)) { $('home-err').textContent = 'Enter your height first, between 120 and 230 cm (4 ft and 7 ft 6 in).'; $('home-err').hidden = false; return; }
-  $('home-err').hidden = true; S.heightCm = h; store.set('fit.height', String(Math.round(h))); S.blurFace = $('opt-face').checked;
+  $('home-err').hidden = true; S.heightCm = h; store.set('fit.height', String(Math.round(h))); S.blurFace = !$('opt-avatar').checked; S.avatarWanted = $('opt-avatar').checked;
   show('s-clothes');
 });
 $('go-sound').addEventListener('click', () => {
@@ -105,13 +105,23 @@ function onOrientation(e) {
   S.ori = { beta: e.beta, gamma: e.gamma, alpha: e.alpha, t: now() }; S.oriCount++;
   if (S.oriLog.length < 3000 && (S.oriLog.length === 0 || S.ori.t - S.oriLog[S.oriLog.length - 1].t > 100)) S.oriLog.push({ t: Math.round(S.ori.t), b: +e.beta.toFixed(2), g: +(e.gamma || 0).toFixed(2) });
 }
+// Chrome 151+ (Android and desktop) and Safari gate the motion sensor behind requestPermission(); it must be called from a
+// tap. Chrome answers from its "Motion sensors" site setting: "denied" means the sensor is blocked for this site, no prompt.
 async function enableSensors() {
+  S.sensorPerm = 'none';
   try {
     if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') {
-      const r = await DeviceOrientationEvent.requestPermission(); log('sensor-permission', r);
+      S.sensorPerm = await DeviceOrientationEvent.requestPermission(); log('sensor-permission', S.sensorPerm);
     }
-  } catch (e) { log('sensor-permission', 'error ' + e); }
-  window.addEventListener('deviceorientation', onOrientation);
+  } catch (e) { S.sensorPerm = 'error'; log('sensor-permission', 'error ' + e); }
+  window.removeEventListener('deviceorientation', onOrientation); window.addEventListener('deviceorientation', onOrientation);
+}
+function sensorHelp() {
+  const brave = !!(navigator.brave), chrome = /Chrome\//.test(navigator.userAgent) && !brave, ios = /iPhone|iPad/.test(navigator.userAgent);
+  if (S.sensorPerm === 'denied' && chrome) return 'Chrome is blocking the motion sensor for this page. Tap the icon at the left of the address bar, open Permissions, set Motion sensors to Allow, then reload. Not listed there? Chrome menu > Settings > Site settings > Motion sensors. Or continue without it: the pictures give the angle later. Keep your head and feet in view.';
+  if (S.sensorPerm === 'denied' && ios) return 'The motion sensor was refused. Tap "Try again" and allow it, or in Settings, Safari, turn on Motion & Orientation Access, then reload. Or continue without it.';
+  if (brave) return 'No tilt readings are arriving. Brave blocks the motion sensor unless Shields are off for this site. Tap "Try again" after changing it, or continue without it: the pictures give the angle later.';
+  return 'No tilt readings are arriving from this phone. Tap "Try again", or continue without the angle check: the pictures give the angle later; just make sure your head and feet are in view.';
 }
 async function startCamera() {
   if (S.stream) return;
@@ -150,20 +160,21 @@ $('go-place').addEventListener('click', async () => {
 });
 
 /* ---------- phone angle ---------- */
-let tiltTimer = null, tiltGood = 0, tiltHist = [];
+let tiltTimer = null, tiltGood = 0, tiltHist = [], tiltHelpShown = false, tiltBegan = 0;
 function startTilt() {
   const band = $('gauge-band');
   band.style.top = (CFG.leanMin / CFG.leanGaugeMax * 100) + '%'; band.style.height = ((CFG.leanMax - CFG.leanMin) / CFG.leanGaugeMax * 100) + '%';
-  tiltGood = 0; tiltHist = []; const began = now();
+  tiltGood = 0; tiltHist = []; tiltHelpShown = false; tiltBegan = now(); $('retry-tilt').hidden = true; $('skip-tilt').textContent = 'Skip the angle check'; $('tilt-note').hidden = false;
   Voice.say('Lean the phone against a wall, on the floor, with the screen facing the room.', { force: true });
   clearInterval(tiltTimer);
   tiltTimer = setInterval(() => {
     if (current !== 's-place') { clearInterval(tiltTimer); return; }
     const o = S.ori, say = $('tilt-say'), g = $('gauge');
     if (!o || now() - o.t > 1500) {
-      if (now() - began > 3500) { say.textContent = 'No tilt readings are arriving. Brave blocks the motion sensor unless Shields are off for this site; Chrome and Safari allow it. Otherwise lean the phone back a little and continue.'; $('skip-tilt').textContent = 'Continue'; $('tilt-note').hidden = true; }
+      if (now() - tiltBegan > (S.sensorPerm === 'denied' ? 300 : 3500) && !tiltHelpShown) { tiltHelpShown = true; say.textContent = sensorHelp(); say.classList.remove('ok'); say.classList.add('help'); $('skip-tilt').textContent = 'Continue without it'; $('retry-tilt').hidden = false; $('tilt-note').hidden = true; log('tilt-no-readings', S.sensorPerm); }
       return;
     }
+    if (tiltHelpShown) { tiltHelpShown = false; say.classList.remove('help'); $('retry-tilt').hidden = true; $('skip-tilt').textContent = 'Skip the angle check'; $('tilt-note').hidden = false; }
     const lean = 90 - o.beta; let msg, ok = false;
     $('tilt-num').textContent = String(Math.round(clamp(lean, -90, 90)));
     $('gauge-needle').style.top = clamp(lean / CFG.leanGaugeMax * 100, 0, 100) + '%';
@@ -181,6 +192,7 @@ function startTilt() {
     else tiltGood = 0;
   }, 120);
 }
+$('retry-tilt').addEventListener('click', async () => { $('retry-tilt').disabled = true; await enableSensors(); tiltBegan = now(); tiltHelpShown = false; $('retry-tilt').hidden = true; $('tilt-say').textContent = 'Checking the sensor…'; $('tilt-say').classList.remove('help'); $('retry-tilt').disabled = false; log('tilt-retry', S.sensorPerm); });
 $('skip-tilt').addEventListener('click', () => { clearInterval(tiltTimer); S.tiltSkipped = true; S.tiltAtStart = S.ori ? { beta: S.ori.beta, gamma: S.ori.gamma, lean: 90 - S.ori.beta } : null; log('tilt-skip'); Voice.unlock(); beginCamera(); });
 
 /* ---------- camera stage ---------- */
@@ -219,9 +231,43 @@ function setRing(deg) {
   $('ring-arc').setAttribute('stroke-dasharray', (c * f).toFixed(1) + ' ' + c.toFixed(1));
   $('ring-deg').textContent = Math.round(clamp(deg, 0, 360)) + '°';
 }
+/* ---------- video of the hold and the turn, for the avatar ---------- */
+// The stills (about 40) are enough to measure; a photographic avatar needs the full video. Recorded only when the avatar
+// is wanted (faces are kept then anyway), from "hold still" to the end of the turn, never uploaded: it goes into the capture file.
+const Rec = {
+  mime() {
+    if (!window.MediaRecorder) return null;
+    for (const m of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4;codecs=avc1', 'video/mp4'])
+      if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
+    return '';
+  },
+  start() {
+    if (!S.avatarWanted || S.rec || !S.stream) return;
+    const mime = Rec.mime(); if (mime === null) { log('video-unsupported'); return; }
+    try {
+      const r = new MediaRecorder(S.stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : { videoBitsPerSecond: 8000000 });
+      S.recChunks = []; S.rec = r;
+      r.ondataavailable = e => { if (e.data && e.data.size) S.recChunks.push(e.data); };
+      r.onstart = () => { S.recStart = Math.round(now() - S.t0); };
+      r.start(1000); log('video-start', r.mimeType || mime);
+    } catch (e) { S.rec = null; log('video-error', String(e)); }
+  },
+  stop(keep) {
+    return new Promise(res => {
+      const r = S.rec; if (!r) return res(null);
+      S.rec = null;
+      r.onstop = () => {
+        const blob = keep && S.recChunks.length ? new Blob(S.recChunks, { type: r.mimeType || 'video/webm' }) : null;
+        S.recChunks = []; S.recEnd = Math.round(now() - S.t0); log(keep ? 'video-kept' : 'video-dropped', blob ? blob.size : 0); res(blob);
+      };
+      try { r.stop(); } catch (e) { res(null); }
+    });
+  },
+};
+
 function beginCamera() {
   show('s-camera'); fitView(); buildTicks(); requestWake();
-  S.frames = []; S.pending = []; S.zip = null; S.phase = 'find'; S.okSince = 0; S.cum = 0; S.prevYaw = null; S.said = {}; S.lastSeen = now(); promptKey = '';
+  S.frames = []; S.pending = []; S.zip = null; S.videoBlob = null; S.phase = 'find'; S.okSince = 0; S.cum = 0; S.prevYaw = null; S.said = {}; S.lastSeen = now(); promptKey = '';
   $('ring').hidden = true; $('count').hidden = true; setRing(0);
   banner('Step back about 2 metres', 'go');
   Voice.say('Good. Now step back about two metres and face the phone.', { force: true });
@@ -235,7 +281,7 @@ function pump() {
   }
   requestAnimationFrame(pump);
 }
-$('cancel-cam').addEventListener('click', () => { S.running = false; S.phase = 'idle'; if (Voice.ok) speechSynthesis.cancel(); show('s-place'); startTilt(); });
+$('cancel-cam').addEventListener('click', () => { Rec.stop(false); S.running = false; S.phase = 'idle'; if (Voice.ok) speechSynthesis.cancel(); show('s-place'); startTilt(); });
 
 /* ---------- reading the body ---------- */
 const LM = { nose: 0, eyeL: 2, eyeR: 5, earL: 7, earR: 8, mouthL: 9, mouthR: 10, shL: 11, shR: 12, wrL: 15, wrR: 16, hipL: 23, hipR: 24, anL: 27, anR: 28 };
@@ -315,6 +361,7 @@ function onPose(r) {
   if (L) S.lastSeen = t;
   $('debug').textContent = S.fps.toFixed(0) + ' fps' + (S.ori ? ' · lean ' + Math.round(90 - S.ori.beta) + '°' : '') + (a ? ' · facing ' + Math.round(a.yaw) + '°' : '') + ' · ' + S.frames.length + ' pics';
 
+
   if (S.phase === 'find' || S.phase === 'hold') {
     const adv = a ? standingAdvice(a) : (t - S.lastSeen > 1500 ? ['none', 'Step back until I can see all of you', 'adjust'] : null);
     drawSkeleton(L, adv ? '#f4c430' : '#46c794');
@@ -322,12 +369,12 @@ function onPose(r) {
     if (!a) return;
     if (!S.okSince) { S.okSince = t; S.phase = 'hold'; }
     prompt('hold', 'Good. Hold still.', 'good', 'Good.');
-    if (t - S.okSince > CFG.holdMs) { S.phase = 'count'; S.countAt = t; S.countShown = 0; log('countdown'); Voice.say('Hold still.', { force: true }); }
+    if (t - S.okSince > CFG.holdMs) { S.phase = 'count'; S.countAt = t; S.countShown = 0; log('countdown'); Voice.say('Hold still.', { force: true }); Rec.start(); }
     return;
   }
   if (S.phase === 'count') {
     drawSkeleton(L, '#46c794');
-    if (t - S.lastSeen > 1200 || (a && (a.vis < 0.4 || a.feet > 0.995 || a.headTop < 0))) { S.phase = 'find'; S.okSince = 0; $('count').hidden = true; log('countdown-abort'); return; }
+    if (t - S.lastSeen > 1200 || (a && (a.vis < 0.4 || a.feet > 0.995 || a.headTop < 0))) { S.phase = 'find'; S.okSince = 0; $('count').hidden = true; log('countdown-abort'); Rec.stop(false); return; }
     const n = 3 - Math.floor((t - S.countAt - 700) / 1000);
     if (t - S.countAt < 700) return;
     if (n >= 1) { if (S.countShown !== n) { S.countShown = n; $('count').hidden = false; $('count').textContent = String(n); banner('Hold still', 'good'); Voice.beep(660, 140); } return; }
@@ -369,10 +416,12 @@ async function finish(complete) {
   S.running = false; S.phase = 'done'; log('turn-end', (complete ? 'complete ' : 'incomplete ') + S.cum.toFixed(0));
   Voice.beep(1320, 180); setTimeout(() => Voice.beep(1760, 320), 200);
   if (!complete && S.frames.length < 12) {
+    Rec.stop(false);
     banner("Let's try that again", 'adjust'); Voice.say('That did not work. Let us try again. Face the phone.', { force: true });
     setTimeout(() => { if (current === 's-camera') beginCamera(); }, 2500); return;
   }
   banner('Done. You can relax.', 'good'); Voice.say('Done. You can relax and pick up the phone.', { force: true });
+  S.videoBlob = await Rec.stop(true);
   await Promise.all(S.pending);
   try { if (S.wake) { await S.wake.release(); S.wake = null; } } catch (e) { /* ignore */ }
   buildReview(complete);
@@ -411,6 +460,7 @@ async function buildReview(complete) {
   const facing = frames.filter(f => f.lm && (Math.abs(f.turned) < 30 || Math.abs(f.turned) > 330));
   const armsDown = facing.filter(f => Math.min(armOf(f, 11, 15), armOf(f, 12, 16)) < CFG.armMin).length;
   const checks = [
+    [!S.avatarWanted || !!S.videoBlob, !S.avatarWanted ? 'No video (measurements only).' : (S.videoBlob ? 'Video recorded for your avatar (' + ((S.recEnd - S.recStart) / 1000).toFixed(0) + ' s, ' + (S.videoBlob.size / 1048576).toFixed(1) + ' MB).' : 'No video was recorded; this phone or browser may not support it.')],
     [facing.length === 0 || armsDown <= facing.length * 0.3, facing.length === 0 ? 'Could not check the arms.' : (armsDown <= facing.length * 0.3 ? 'Arms stayed out.' : 'Arms dropped towards the body during the turn. Measurements will be poor; measure again with arms held out.')],
     [complete && turned >= CFG.turnDoneDeg, complete ? 'Full turn seen (' + Math.round(turned) + '°).' : 'The turn looked incomplete (' + Math.round(turned) + '°). You can still save it, or measure again.'],
     [frames.length >= 30, frames.length + ' pictures saved' + (frames.length < 30 ? '. That is few; a slower turn gives more.' : '.')],
@@ -427,11 +477,13 @@ async function buildReview(complete) {
   }
   const meta = {
     app: 'fit-capture', version: APP_VERSION, created: new Date().toISOString(), height_cm: S.heightCm, face_blurred: S.blurFace, complete, turned_deg: +S.cum.toFixed(1),
-    user_agent: navigator.userAgent, screen: { w: screen.width, h: screen.height, dpr: window.devicePixelRatio }, video: S.video, track: S.track, model_complexity: S.modelComplexity, fitted_confirmed: !!S.fittedConfirmed,
-    mirrored: false, camera: 'front', tilt_at_start: S.tiltAtStart, tilt_skipped: S.tiltSkipped, orientation_samples: S.oriLog.slice(-1500), events: S.events,
+    user_agent: navigator.userAgent, screen: { w: screen.width, h: screen.height, dpr: window.devicePixelRatio }, video: S.video, track: S.track, model_complexity: S.modelComplexity, fitted_confirmed: !!S.fittedConfirmed, avatar_wanted: !!S.avatarWanted,
+    mirrored: false, camera: 'front', tilt_at_start: S.tiltAtStart, tilt_skipped: S.tiltSkipped, sensor_permission: S.sensorPerm, orientation_events: S.oriCount, orientation_samples: S.oriLog.slice(-1500), events: S.events,
+    video_file: S.videoBlob ? { file: 'video.' + (/mp4/.test(S.videoBlob.type) ? 'mp4' : 'webm'), mime: S.videoBlob.type, t_start_ms: S.recStart, t_end_ms: S.recEnd, bytes: S.videoBlob.size } : null,
     frames: frames.map((f, n) => ({ file: 'frames/f' + String(n).padStart(3, '0') + '.jpg', t_ms: f.t, tag: f.tag, w: f.w, h: f.h, facing_deg: f.yaw, turned_deg: f.turned, beta: f.beta, gamma: f.gamma, landmarks: f.lm, world: f.world })),
   };
   const files = [{ name: 'capture.json', data: new TextEncoder().encode(JSON.stringify(meta)) }];
+  if (S.videoBlob) files.push({ name: meta.video_file.file, data: new Uint8Array(await S.videoBlob.arrayBuffer()) });
   for (let n = 0; n < frames.length; n++) files.push({ name: meta.frames[n].file, data: new Uint8Array(await frames[n].blob.arrayBuffer()) });
   S.zip = makeZip(files); S.meta = meta;
   const d = new Date(), p = v => String(v).padStart(2, '0');

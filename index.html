@@ -93,6 +93,7 @@ input[type=number]:focus { border-color: var(--tape); outline: none; }
 .gauge-read .big { font: 700 44px/1 var(--display); font-variant-numeric: tabular-nums; }
 .gauge-read .say { font: 700 22px/1.15 var(--display); color: var(--tape); text-wrap: balance; }
 .gauge-read .say.ok { color: var(--good); }
+.gauge-read .say.help { font: 500 15px/1.35 var(--body, system-ui); color: var(--chalk); text-wrap: pretty; }
 
 /* camera stage */
 #s-camera { position: fixed; inset: 0; max-width: none; padding: 0; background: #000; display: block; }
@@ -148,7 +149,7 @@ input[type=number]:focus { border-color: var(--tape); outline: none; }
     </div>
     <div class="hint" id="h-hint">Without shoes. Every other measurement is scaled from this, so measure it if you can.</div>
   </div>
-  <label class="check"><input type="checkbox" id="opt-face" checked> <span><strong>Blur my face</strong> in the saved pictures.</span></label>
+  <label class="check"><input type="checkbox" id="opt-avatar" checked> <span><strong>Make my avatar from these pictures.</strong> Your skin, hair and face are taken from the pictures and the video, so they are kept as they are in the capture file. Untick for measurements only; faces are then blurred.</span></label>
   <div class="grow"></div>
   <p class="err" id="home-err" hidden></p>
   <button class="btn" id="go-clothes">Start</button>
@@ -221,7 +222,7 @@ input[type=number]:focus { border-color: var(--tape); outline: none; }
     </div>
   </div>
   <div class="grow"></div>
-  <div class="row"><button class="btn ghost" data-back="s-sound">Back</button><button class="btn ghost" id="skip-tilt">Skip the angle check</button></div>
+  <div class="row"><button class="btn ghost" data-back="s-sound">Back</button><button class="btn ghost" id="retry-tilt" hidden>Try again</button><button class="btn ghost" id="skip-tilt">Skip the angle check</button></div>
 </section>
 
 <section class="screen" id="s-camera" hidden>
