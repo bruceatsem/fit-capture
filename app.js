@@ -3,7 +3,7 @@
    Body landmarks come from MediaPipe Pose (Apache 2.0), run on the phone. Nothing is sent anywhere. */
 (() => {
 'use strict';
-const APP_VERSION = '0.3.4';
+const APP_VERSION = '0.3.5';
 const $ = id => document.getElementById(id);
 const now = () => performance.now();
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -156,7 +156,7 @@ function sensorHelp() {
 async function startCamera() {
   if (S.stream) return;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('This browser cannot open the camera. Try Chrome on Android or Safari on iPhone.');
-  const s = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, resizeMode: { ideal: 'none' } } });
+  const s = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }, resizeMode: { ideal: 'none' } } });
   S.stream = s; const v = $('video'); v.srcObject = s; await v.play().catch(() => {});
   const tr = s.getVideoTracks()[0];
   S.track = { label: tr.label, settings: tr.getSettings ? tr.getSettings() : {}, capabilities: tr.getCapabilities ? tr.getCapabilities() : {} };
@@ -261,6 +261,41 @@ function setRing(deg) {
   $('ring-arc').setAttribute('stroke-dasharray', (c * f).toFixed(1) + ' ' + c.toFixed(1));
   $('ring-deg').textContent = Math.round(clamp(deg, 0, 360)) + '°';
 }
+/* ---------- one full-resolution photo at "hold still", for the face ---------- */
+// The video is 1080p at best and the face in it is ~100 pixels wide from 2 m. The camera's photo mode gives the full sensor
+// (8 to 12 megapixels on most phones, a ~400 pixel face) with no extra step for the person. Chrome on Android has ImageCapture;
+// where it is missing (Safari), a frame of the stream at its own resolution is kept instead.
+const Photo = {
+  async take(r) {
+    S.photo = null;
+    if (!S.avatarWanted || !S.stream) return;
+    const L = r && r.poseLandmarks, t = Math.round(now() - S.t0);
+    const lm = L ? L.map(p => [+p.x.toFixed(4), +p.y.toFixed(4), +p.z.toFixed(4), +(p.visibility || 0).toFixed(2)]) : null;
+    const track = S.stream.getVideoTracks()[0];
+    let blob = null, how = 'frame';
+    if (window.ImageCapture && track) {
+      try {
+        const ic = new ImageCapture(track);
+        let opts = {};
+        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('photo timeout')), 2500));
+        try { const pc = await Promise.race([ic.getPhotoCapabilities(), timeout]); if (pc.imageWidth && pc.imageHeight) opts = { imageWidth: pc.imageWidth.max, imageHeight: pc.imageHeight.max }; } catch (e) {}
+        try { blob = await Promise.race([ic.takePhoto(opts), timeout]); how = 'photo'; }
+        catch (e1) { log('photo-error', String(e1)); try { blob = await Promise.race([ic.takePhoto(), timeout]); how = 'photo-default'; } catch (e2) { log('photo-error', String(e2)); blob = null; } }
+      } catch (e) { log('photo-error', String(e)); }
+    }
+    if (!blob) {
+      const c = document.createElement('canvas'); c.width = video.videoWidth; c.height = video.videoHeight;
+      c.getContext('2d').drawImage(video, 0, 0);
+      blob = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.95));
+    }
+    if (!blob) return;
+    let w = 0, h = 0;
+    try { const bmp = await createImageBitmap(blob); w = bmp.width; h = bmp.height; bmp.close(); } catch (e) {}
+    S.photo = { blob, w, h, t, how, lm, video_w: video.videoWidth, video_h: video.videoHeight };
+    log('photo-taken', how + ' ' + w + 'x' + h + ' ' + blob.size + ' bytes');
+  }
+};
+
 /* ---------- video of the hold and the turn, for the avatar ---------- */
 // The stills (about 40) are enough to measure; a photographic avatar needs the full video. Recorded only when the avatar
 // is wanted (faces are kept then anyway), from "hold still" to the end of the turn, never uploaded: it goes into the capture file.
@@ -277,7 +312,7 @@ const Rec = {
     if (!S.avatarWanted || S.rec || !S.stream) return;
     const mime = Rec.mime(); if (mime === null) { log('video-unsupported'); return; }
     try {
-      const r = new MediaRecorder(S.stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : { videoBitsPerSecond: 8000000 });
+      const r = new MediaRecorder(S.stream, mime ? { mimeType: mime, videoBitsPerSecond: 12000000 } : { videoBitsPerSecond: 12000000 });
       S.recChunks = []; S.rec = r;
       r.ondataavailable = e => { if (e.data && e.data.size) S.recChunks.push(e.data); };
       r.onstart = () => { S.recStart = Math.round(now() - S.t0); };
@@ -299,7 +334,7 @@ const Rec = {
 
 function beginCamera() {
   show('s-camera'); fitView(); buildTicks(); requestWake();
-  S.frames = []; S.pending = []; S.zip = null; S.videoBlob = null; S.phase = 'find'; S.okSince = 0; S.cum = 0; S.prevYaw = null; S.said = {}; S.lastSeen = now(); promptKey = '';
+  S.frames = []; S.pending = []; S.zip = null; S.videoBlob = null; S.photo = null; S.phase = 'find'; S.okSince = 0; S.cum = 0; S.prevYaw = null; S.said = {}; S.lastSeen = now(); promptKey = '';
   $('ring').hidden = true; $('count').hidden = true; setRing(0);
   banner('Step back about 2 metres', 'go');
   Voice.say('Good. Now step back about two metres and face the phone.', { force: true });
@@ -401,7 +436,7 @@ function onPose(r) {
     if (!a) return;
     if (!S.okSince) { S.okSince = t; S.phase = 'hold'; }
     prompt('hold', 'Good. Hold still.', 'good', 'Good.');
-    if (t - S.okSince > CFG.holdMs) { S.phase = 'count'; S.countAt = t; S.countShown = 0; log('countdown'); Voice.say('Hold still.', { force: true }); Rec.start(); }
+    if (t - S.okSince > CFG.holdMs) { S.phase = 'count'; S.countAt = t; S.countShown = 0; log('countdown'); Voice.say('Hold still.', { force: true }); Photo.take(r).finally(() => { if (S.phase === 'count' || S.phase === 'turn') Rec.start(); }); }
     return;
   }
   if (S.phase === 'count') {
@@ -492,6 +527,7 @@ async function buildReview(complete) {
   const facing = frames.filter(f => f.lm && (Math.abs(f.turned) < 30 || Math.abs(f.turned) > 330));
   const armsDown = facing.filter(f => Math.min(armOf(f, 11, 15), armOf(f, 12, 16)) < CFG.armMin).length;
   const checks = [
+    [!S.avatarWanted || !!(S.photo && S.photo.how !== 'frame'), !S.avatarWanted ? 'No face photo (measurements only).' : (S.photo ? (S.photo.how === 'frame' ? 'Face picture at video resolution only (' + S.photo.w + 'x' + S.photo.h + '); this browser has no photo mode.' : 'Full-resolution photo for the face (' + S.photo.w + 'x' + S.photo.h + ').') : 'No face photo was taken.')],
     [!S.avatarWanted || !!S.videoBlob, !S.avatarWanted ? 'No video (measurements only).' : (S.videoBlob ? 'Video recorded for your avatar (' + ((S.recEnd - S.recStart) / 1000).toFixed(0) + ' s, ' + (S.videoBlob.size / 1048576).toFixed(1) + ' MB).' : 'No video was recorded; this phone or browser may not support it.')],
     [facing.length === 0 || armsDown <= facing.length * 0.3, facing.length === 0 ? 'Could not check the arms.' : (armsDown <= facing.length * 0.3 ? 'Arms stayed out.' : 'Arms dropped towards the body during the turn. Measurements will be poor; measure again with arms held out.')],
     [complete && turned >= CFG.turnDoneDeg, complete ? 'Full turn seen (' + Math.round(turned) + '°).' : 'The turn looked incomplete (' + Math.round(turned) + '°). You can still save it, or measure again.'],
@@ -512,9 +548,11 @@ async function buildReview(complete) {
     user_agent: navigator.userAgent, screen: { w: screen.width, h: screen.height, dpr: window.devicePixelRatio }, video: S.video, track: S.track, model_complexity: S.modelComplexity, fitted_confirmed: !!S.fittedConfirmed, avatar_wanted: !!S.avatarWanted,
     mirrored: false, camera: 'front', tilt_at_start: S.tiltAtStart, tilt_skipped: S.tiltSkipped, sensor_permission: S.sensorPerm, orientation_events: S.oriCount, orientation_source: S.oriSrc || null, motion_events: S.motionCount || 0, accelerometer_events: S.accelCount || 0, accelerometer_error: S.accelErr || null, orientation_samples: S.oriLog.slice(-1500), events: S.events,
     video_file: S.videoBlob ? { file: 'video.' + (/mp4/.test(S.videoBlob.type) ? 'mp4' : 'webm'), mime: S.videoBlob.type, t_start_ms: S.recStart, t_end_ms: S.recEnd, bytes: S.videoBlob.size } : null,
+    photo: S.photo ? { file: 'photo.jpg', how: S.photo.how, w: S.photo.w, h: S.photo.h, t_ms: S.photo.t, landmarks: S.photo.lm, video_w: S.photo.video_w, video_h: S.photo.video_h } : null,
     frames: frames.map((f, n) => ({ file: 'frames/f' + String(n).padStart(3, '0') + '.jpg', t_ms: f.t, tag: f.tag, w: f.w, h: f.h, facing_deg: f.yaw, turned_deg: f.turned, beta: f.beta, gamma: f.gamma, landmarks: f.lm, world: f.world })),
   };
   const files = [{ name: 'capture.json', data: new TextEncoder().encode(JSON.stringify(meta)) }];
+  if (S.photo) files.push({ name: 'photo.jpg', data: new Uint8Array(await S.photo.blob.arrayBuffer()) });
   if (S.videoBlob) files.push({ name: meta.video_file.file, data: new Uint8Array(await S.videoBlob.arrayBuffer()) });
   for (let n = 0; n < frames.length; n++) files.push({ name: meta.frames[n].file, data: new Uint8Array(await frames[n].blob.arrayBuffer()) });
   S.zip = makeZip(files); S.meta = meta;
